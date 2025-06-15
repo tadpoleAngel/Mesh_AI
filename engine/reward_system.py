@@ -5,7 +5,7 @@ def compute_reward(true_value, predicted_value):
     """
     error = abs(true_value - predicted_value)
     reward = -error  # Inverse reward: lower error means higher reward
-    return reward
+    return reward, error
 
 
 def compute_summary(true_value, predicted_value):
