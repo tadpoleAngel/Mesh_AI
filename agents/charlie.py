@@ -1,120 +1,87 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import os
 from agents.base_agent import BaseAgent
-from sklearn.linear_model import LinearRegression
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import PolynomialFeatures
-import numpy as np
 
 
-class DummyConstantModel:
-    """ Always predicts zero. Used at very low knowledge levels. """
-    def fit(self, X, y):
-        pass
+class SimpleRegressor(nn.Module):
+    def __init__(self, input_dim=2, hidden_dim=16):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
 
-    def predict(self, X):
-        return [0.0 for _ in X]
-
-
-class NaiveDeltaModel:
-    """ Predicts next value by extrapolating last delta. """
-    def fit(self, X, y):
-        self.y = y
-
-    def predict(self, X_next):
-        if len(self.y) < 2:
-            return [self.y[-1] if self.y else 0.0 for _ in X_next]
-        delta = self.y[-1] - self.y[-2]
-        return [self.y[-1] + delta for _ in X_next]
+    def forward(self, x):
+        return self.net(x)
 
 
 class Charlie(BaseAgent):
-    def __init__(self, name="Charlie"):
+    def __init__(self, name, model_path="models/charlie.pkl", max_ticks=1000):
         super().__init__(name)
-        self.memory = []  # list of (tick, value)
-        self.max_knowledge = 15  # You may adjust this ceiling later
-        self.model = DummyConstantModel()  # Start with a simple model
-        self.configure_model()
+        self.model_path = model_path
+        self.max_ticks = max_ticks
+        self.model = SimpleRegressor()
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.01)
+        self.loss_fn = nn.MSELoss()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+        self.last_reward = 0.0
+
+        # Try to load model from disk if it exists
+        if os.path.exists(model_path) and os.path.getsize(model_path) > 0:
+            self.load_model(model_path)
 
     def observe(self, data):
         """
-        Expecting data in the form {'tick': int, 'value': float}
-        Stores data for future model training.
+        Charlie receives Bob's memory buffer (a list of dicts with 'tick' and 'value').
         """
-        super().observe(data)
-        if isinstance(data, dict) and 'tick' in data and 'value' in data:
-            self.memory.append((data['tick'], data['value']))
-        return data
-
-    def configure_model(self):
-        """
-        Configure internal model based on current knowledge level.
-        """
-        level = self.knowledge_level
-
-        if level <= 2:
-            self.model = DummyConstantModel()
-        elif level <= 4:
-            self.model = NaiveDeltaModel()
-        elif level <= 8:
-            self.model = LinearRegression()
-        elif level <= 12:
-            self.model = make_pipeline(PolynomialFeatures(degree=2), LinearRegression())
-        else:
-            self.model = make_pipeline(PolynomialFeatures(degree=3), LinearRegression())
-
-    def history_depth(self):
-        """
-        Determines how many past data points to use based on knowledge level.
-        """
-        if self.knowledge_level <= 2:
-            return 1
-        elif self.knowledge_level <= 4:
-            return 2
-        elif self.knowledge_level <= 8:
-            return 5
-        elif self.knowledge_level <= 12:
-            return 10
-        else:
-            return 20
+        # wrapped in a list because thats what the rest of the class expects
+        self.latest_observation = [data.get("content", [])] if data else []
 
     def predict_next(self):
-        """
-        Predicts the next tick value using the current model and memory.
-        """
-        usable_memory = self.memory[-self.history_depth():]
-        if len(usable_memory) < 2:
-            return 0.0
+        if not hasattr(self, 'latest_observation') or self.latest_observation is None or len(self.latest_observation) == 0:
+            return None
 
-        X = np.array([[tick] for tick, _ in usable_memory])
-        y = np.array([value for _, value in usable_memory])
-
-        try:
-            self.model.fit(X, y)
-            next_tick = np.array([[usable_memory[-1][0] + 1]])
-            prediction = self.model.predict(next_tick)[0]
-        except Exception:
-            prediction = 0.0
-
+        tick_norm = self.latest_observation[-1]["tick"] / self.max_ticks
+        tick_val = torch.tensor([[tick_norm, self.last_reward]], dtype=torch.float32).to(self.device)
+        with torch.no_grad():
+            prediction = self.model(tick_val).item()
         return prediction
 
-    def apply_knowledge_change(self, delta):
-        """
-        Override to reconfigure Charlie’s model when knowledge level changes.
-        """
-        super().apply_knowledge_change(delta)
-        self.configure_model()
+    def train(self, actual_value, reward=None):
+        if not self.latest_observation:
+            return
 
-    def generate_message(self):
-        """
-        Charlie typically doesn’t send messages in early implementations.
-        """
-        return {
-            "from": self.name,
-            "content": None,
-            "notes": f"Charlie is at knowledge level {self.knowledge_level}."
-        }
+        self.last_reward = reward if reward is not None else 0.0
 
-    def generate_outbound_messages(self):
-        """
-        Optional messages to Alice and/or Bob.
-        """
-        return []
+        # Prepare training data from Bob's memory buffer
+        X_list = []
+        y_list = []
+        for entry in self.latest_observation:
+            tick_norm = entry["tick"] / self.max_ticks
+            X_list.append([tick_norm, self.last_reward])
+            y_list.append(entry["value"])
+
+        X = torch.tensor(X_list, dtype=torch.float32).to(self.device)
+        y = torch.tensor(y_list, dtype=torch.float32).unsqueeze(1).to(self.device)
+
+        self.model.train()
+        self.optimizer.zero_grad()
+        predictions = self.model(X)
+        loss = self.loss_fn(predictions, y)
+        loss.backward()
+        self.optimizer.step()
+
+
+    def save_model(self, path=None):
+        if path is None:
+            path = self.model_path
+        torch.save(self.model.state_dict(), path)
+
+    def load_model(self, path=None):
+        if path is None:
+            path = self.model_path
+        self.model.load_state_dict(torch.load(path, map_location=self.device))

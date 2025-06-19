@@ -36,15 +36,18 @@ def run_tick(tick, alice: Alice, bob: Bob, charlie: Charlie):
     # --- Step 3: Charlie receives processed data and predicts ---
     charlie_input = bob.generate_message()
     charlie.receive_message(charlie_input)
-
+    
     if bob_processed and "content" in bob_processed and bob_processed["content"]:
-        charlie.observe(bob_processed["content"])
+        charlie.observe(bob_processed)
     
     prediction = charlie.predict_next()
 
     # --- Step 4: Compute actual and reward ---
     actual_value = raw_data["value"]
     reward, error = compute_reward(actual_value, prediction)
+
+    charlie.train(actual_value, reward)
+    charlie.save_model()
 
     # --- Step 5: Messaging phase (up to 2 outbound each) ---
     all_agents = {"alice": alice, "bob": bob, "charlie": charlie}

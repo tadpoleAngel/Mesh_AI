@@ -1,48 +1,44 @@
+# File: agents/bob.py
+
 from agents.base_agent import BaseAgent
 
 class Bob(BaseAgent):
-    def __init__(self, name="Bob"):
+    def __init__(self, name, memory_size=20):
         super().__init__(name)
-        self.database = []  # Store data from Alice and previous ticks
+        self.memory_size = memory_size
+        self.memory = []  # Holds recent observations from Alice
 
     def observe(self, data):
         """
-        Bob receives structured data from Alice:
-        {'tick': int, 'value': float, 'notes': Optional[str]}
-        Stores and may optionally preprocess before forwarding to Charlie.
+        Bob receives data from Alice and stores it in memory (rolling buffer).
+        Data includes both raw value and commentary.
         """
-        super().observe(data)
-        if isinstance(data, dict) and 'tick' in data and 'value' in data:
-            self.database.append(data)
+        if data is not None:
+            self.memory.append(data)
+            if len(self.memory) > self.memory_size:
+                self.memory.pop(0)
+            self.latest_observation = data  # For messaging or tracking
         return data
 
     def generate_message(self):
         """
-        Packages data for Charlie.
-        Adds extra computation like a moving average.
+        Packages recent memory into a message for Charlie.
         """
-        message_data = {
+        return {
             "from": self.name,
-            "content": None,
-            "notes": None
+            "content": self.memory.copy(),  # Send the buffer, not just latest
+            "notes": f"Memory of last {len(self.memory)} ticks."
         }
-
-        if self.database:
-            latest = self.database[-1]
-            recent_values = [entry['value'] for entry in self.database[-3:]]
-            avg = sum(recent_values) / len(recent_values)
-
-            message_data["content"] = {
-                "tick": latest["tick"],
-                "value": latest["value"],
-                "moving_avg": avg
-            }
-            message_data["notes"] = f"3-tick average computed by Bob."
-
-        return message_data
 
     def generate_outbound_messages(self):
         """
-        Sends a message to Charlie. Only 1 recipient at this stage.
+        Bob may send up to two messages. Currently unused.
         """
-        return [("Charlie", self.generate_message())]
+        return []
+
+    def propose_knowledge_changes(self):
+        """
+        Currently neutral; does not attempt to change other agents.
+        """
+        return {}
+
