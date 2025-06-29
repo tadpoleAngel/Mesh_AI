@@ -24,7 +24,7 @@ class Charlie(BaseAgent):
         self.model_path = model_path
         self.max_ticks = max_ticks
         self.model = SimpleRegressor()
-        self.optimizer = optim.SGD(self.model.parameters(), lr=0.01)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
         self.loss_fn = nn.MSELoss()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
@@ -52,28 +52,37 @@ class Charlie(BaseAgent):
         return prediction
 
     def train(self, actual_value, reward=None):
-        if not self.latest_observation:
+        if not self.latest_observation or not isinstance(self.latest_observation, list):
             return
 
         self.last_reward = reward if reward is not None else 0.0
 
-        # Prepare training data from Bob's memory buffer
+        # Normalize inputs
         X_list = []
         y_list = []
         for entry in self.latest_observation:
-            tick_norm = entry["tick"] / self.max_ticks
+            tick = entry.get("tick", 0)
+            value = entry.get("value", 0.0)
+            tick_norm = tick / self.max_ticks if self.max_ticks else 0.0
             X_list.append([tick_norm, self.last_reward])
-            y_list.append(entry["value"])
+            y_list.append(value)
 
-        X = torch.tensor(X_list, dtype=torch.float32).to(self.device)
-        y = torch.tensor(y_list, dtype=torch.float32).unsqueeze(1).to(self.device)
+        try:
+            X = torch.tensor(X_list, dtype=torch.float32).to(self.device)
+            y = torch.tensor(y_list, dtype=torch.float32).unsqueeze(1).to(self.device)
 
-        self.model.train()
-        self.optimizer.zero_grad()
-        predictions = self.model(X)
-        loss = self.loss_fn(predictions, y)
-        loss.backward()
-        self.optimizer.step()
+            self.model.train()
+            self.optimizer.zero_grad()
+            predictions = self.model(X)
+            loss = self.loss_fn(predictions, y)
+            loss.backward()
+
+            # Clip gradients to prevent instability
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
+            self.optimizer.step()
+        except Exception as e:
+            print(f"[Charlie] Training failed: {e}")
 
 
     def save_model(self, path=None):

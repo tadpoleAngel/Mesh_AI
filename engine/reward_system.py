@@ -4,7 +4,9 @@ def compute_reward(true_value, predicted_value):
     Lower error yields higher reward. Reward can be negative.
     """
     error = abs(true_value - predicted_value)
-    reward = -error  # Inverse reward: lower error means higher reward
+    reward = 1.0 - abs(predicted_value - true_value) / (abs(true_value) + 1e-5)
+    # Now perfect prediction → +1, worse → 0 or even negative
+    # Inverse reward: lower error means higher reward
     return reward, error
 
 
